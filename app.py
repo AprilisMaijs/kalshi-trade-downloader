@@ -87,6 +87,36 @@ def market_label(market):
     return f"{title}  ·  {market['ticker']}  ·  {market.get('status', '?')}  ·  closes {close}"
 
 
+def scope_name(markets):
+    """Short name for a selection of markets, used in messages and filenames."""
+    if len(markets) == 1:
+        return markets[0]["ticker"]
+    event_tickers = {m.get("event_ticker") for m in markets}
+    if len(event_tickers) == 1:
+        return event_tickers.pop()
+    return markets[0]["ticker"].split("-")[0]  # shared series prefix
+
+
+def select_scope(markets, key):
+    """Let the user download one market or the whole event/series block."""
+    if len(markets) == 1:
+        st.caption(f"Found: {market_label(markets[0])}")
+        return markets
+    mode = st.radio(
+        "What to download", ["One market", f"All {len(markets)} markets"],
+        key=f"{key}_mode", horizontal=True,
+        help="\"All markets\" combines every market shown into one CSV; the "
+             "ticker column tells the rows apart.")
+    if mode == "One market":
+        choice = st.selectbox("Market", markets, format_func=market_label,
+                              key=f"{key}_choice")
+        return [choice]
+    if len(markets) > 100:
+        st.warning(f"That's {len(markets)} markets — the download will work, "
+                   "but may take a while.")
+    return markets
+
+
 def pick_market():
     st.header("1 · Pick a market")
     tab_paste, tab_browse = st.tabs(["Paste a Kalshi link or ticker", "Browse events"])
@@ -105,9 +135,7 @@ def pick_market():
                          "link or ticker — or try the Browse tab.")
         markets = st.session_state.get("paste_markets") or []
         if markets:
-            choice = st.selectbox("Market", markets, format_func=market_label,
-                                  key="paste_choice")
-            return choice
+            return select_scope(markets, "paste")
 
     with tab_browse:
         status = st.selectbox("Event status", ["open", "closed", "settled"],
@@ -126,24 +154,25 @@ def pick_market():
                 if not markets:
                     st.warning("No markets found for this event.")
                 else:
-                    return st.selectbox("Market", markets, format_func=market_label,
-                                        key="browse_choice")
+                    return select_scope(markets, "browse")
     return None
 
 
-def pick_timeframe(market):
+def pick_timeframe(markets):
     st.header("2 · Pick a timeframe")
-    st.caption("Dates are in UTC. The default range covers the market's whole life.")
+    st.caption("Dates are in UTC. The default range covers the selected "
+               "markets' whole life.")
     today = datetime.now(timezone.utc).date()
+    open_times = [m["open_time"] for m in markets if m.get("open_time")]
+    close_times = [m["close_time"] for m in markets if m.get("close_time")]
     open_default = today
-    open_time = market.get("open_time")
-    if open_time:
-        open_default = datetime.fromisoformat(open_time.replace("Z", "+00:00")).date()
+    if open_times:
+        open_default = datetime.fromisoformat(
+            min(open_times).replace("Z", "+00:00")).date()
     close_default = today
-    close_time = market.get("close_time")
-    if close_time:
-        close_default = min(
-            today, datetime.fromisoformat(close_time.replace("Z", "+00:00")).date())
+    if close_times:
+        close_default = min(today, datetime.fromisoformat(
+            max(close_times).replace("Z", "+00:00")).date())
     col_from, col_to = st.columns(2)
     start = col_from.date_input("From", value=open_default, key="date_from")
     end = col_to.date_input("To", value=max(close_default, open_default), key="date_to")
@@ -153,47 +182,58 @@ def pick_timeframe(market):
     return day_bounds_utc(start, end)
 
 
-def fetch_section(market, bounds):
+def fetch_section(markets, bounds):
     st.header("3 · Fetch trades")
-    ticker = market["ticker"]
-    if st.button(f"Fetch trades for {ticker}", type="primary"):
+    scope = scope_name(markets)
+    label = scope if len(markets) == 1 else f"{scope} ({len(markets)} markets)"
+    result_key = (tuple(m["ticker"] for m in markets), bounds)
+    if st.button(f"Fetch trades for {label}", type="primary"):
         status_line = st.empty()
-        progress_of = {"archive": 0, "recent": 0}
-
-        def on_progress(source, count):
-            progress_of[source] = count
-            total = max(progress_of.values())
-            status_line.info(f"Downloading... {total:,} trades so far "
-                             f"({'older archive' if source == 'archive' else 'recent data'})")
-
+        all_trades = []
         try:
-            trades = client().fetch_trades(ticker, bounds[0], bounds[1],
-                                           on_progress=on_progress)
+            for index, market in enumerate(markets, start=1):
+                prefix = (f"Market {index}/{len(markets)} ({market['ticker']}): "
+                          if len(markets) > 1 else "")
+
+                def on_progress(source, count):
+                    status_line.info(
+                        f"{prefix}downloading... {len(all_trades) + count:,} "
+                        "trades so far")
+
+                all_trades.extend(client().fetch_trades(
+                    market["ticker"], bounds[0], bounds[1],
+                    on_progress=on_progress))
         except KalshiApiError as exc:
             status_line.empty()
             st.error(f"Kalshi's API could not be reached. Check your internet "
                      f"connection and try again.\n\nDetails: {exc}")
             return
         status_line.empty()
-        st.session_state.result = (ticker, bounds, pd.DataFrame(trades))
+        all_trades.sort(key=lambda t: t["created_time"])
+        st.session_state.result = (result_key, pd.DataFrame(all_trades))
 
     result = st.session_state.get("result")
-    if not result or result[0] != ticker or result[1] != bounds:
+    if not result or result[0] != result_key:
         return
-    _, _, df = result
+    _, df = result
     if df.empty:
         st.warning("No trades were found in this timeframe. Try widening the "
                    "date range — some markets trade only near their close date.")
         return
-    st.success(f"Got {len(df):,} trades from {df['created_time'].iloc[0][:10]} "
-               f"to {df['created_time'].iloc[-1][:10]}.")
+    per_market = df["ticker"].nunique()
+    summary = f"Got {len(df):,} trades from {df['created_time'].iloc[0][:10]} " \
+              f"to {df['created_time'].iloc[-1][:10]}"
+    if len(markets) > 1:
+        summary += f" across {per_market} of {len(markets)} markets " \
+                   "(the rest had no trades in this timeframe)"
+    st.success(summary + ".")
     st.dataframe(df.head(100), width="stretch")
     start_str = datetime.fromtimestamp(bounds[0], tz=timezone.utc).strftime("%Y%m%d")
     end_str = datetime.fromtimestamp(bounds[1], tz=timezone.utc).strftime("%Y%m%d")
     st.download_button(
         "⬇️ Download CSV",
         df.to_csv(index=False).encode("utf-8"),
-        file_name=f"{ticker}_{start_str}_{end_str}.csv",
+        file_name=f"{scope}_{start_str}_{end_str}.csv",
         mime="text/csv",
         type="primary",
     )
@@ -203,10 +243,10 @@ st.title("📈 Kalshi Trade Downloader")
 st.caption("Downloads the full trade history of a Kalshi market as a CSV file. "
            "Runs entirely on this computer using Kalshi's public API.")
 
-selected_market = pick_market()
-if selected_market:
+selected_markets = pick_market()
+if selected_markets:
     st.divider()
-    timeframe = pick_timeframe(selected_market)
+    timeframe = pick_timeframe(selected_markets)
     if timeframe:
         st.divider()
-        fetch_section(selected_market, timeframe)
+        fetch_section(selected_markets, timeframe)

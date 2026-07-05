@@ -41,6 +41,9 @@ close it when you're done.
 1. **Pick a market.** The easiest way: find the market on
    [kalshi.com](https://kalshi.com), copy the web address from your browser,
    and paste it into the app. You can also browse events by status.
+   - If the link points to a whole **event or series** (several related
+     markets), you can choose **"All markets"** to download every one of
+     them into a single CSV — the `ticker` column tells the rows apart.
 2. **Pick a timeframe.** Two date pickers; the default covers the market's
    entire life. All times are UTC.
 3. **Fetch & download.** Click the fetch button, watch the progress, preview
