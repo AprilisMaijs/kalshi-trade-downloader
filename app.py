@@ -62,14 +62,15 @@ def candidates_from_input(text):
     return unique or [text.upper()]
 
 
-def resolve_markets(text):
+@st.cache_data(ttl=600, show_spinner=False)
+def resolve_markets(text, complete_series=False):
     """Try each candidate as market ticker, then event ticker, then series ticker."""
     api = client()
     for candidate in candidates_from_input(text):
         for lookup in (
             lambda c: api.get_markets(tickers=c),
             lambda c: api.get_markets(event_ticker=c),
-            lambda c: api.get_markets(series_ticker=c, max_items=500),
+            lambda c: api.get_series_markets(c, complete=complete_series),
         ):
             try:
                 markets = lookup(candidate)
@@ -127,14 +128,28 @@ def pick_market():
                    "`KXBTC15M-26JUL050845-45` works too.")
         text = st.text_input("Kalshi link or ticker", key="paste_input",
                              placeholder="https://kalshi.com/markets/...")
+        complete_series = st.checkbox(
+            "Load the complete series (no limit)", key="complete_series",
+            help="For links to a recurring series (daily temperatures, hourly "
+                 "Bitcoin prices, ...) the normal lookup shows only the 500 "
+                 "newest markets. Tick this to load every market the series "
+                 "has ever had, including long-settled ones. Listing a large "
+                 "series can take a few minutes.")
         if text:
-            with st.spinner("Looking up market..."):
-                st.session_state.paste_markets = resolve_markets(text)
+            with st.spinner("Looking up market... (complete series can take "
+                            "a few minutes)" if complete_series
+                            else "Looking up market..."):
+                st.session_state.paste_markets = resolve_markets(
+                    text, complete_series)
             if not st.session_state.paste_markets:
                 st.error("Couldn't find a market for that input. Double-check the "
                          "link or ticker — or try the Browse tab.")
         markets = st.session_state.get("paste_markets") or []
         if markets:
+            if len(markets) == 500 and not complete_series:
+                st.info("This looks like a series with more than 500 markets — "
+                        "only the 500 newest are shown. Tick \"Load the "
+                        "complete series\" above to get all of them.")
             return select_scope(markets, "paste")
 
     with tab_browse:

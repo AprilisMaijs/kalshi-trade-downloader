@@ -44,6 +44,10 @@ close it when you're done.
    - If the link points to a whole **event or series** (several related
      markets), you can choose **"All markets"** to download every one of
      them into a single CSV — the `ticker` column tells the rows apart.
+   - For recurring series (daily temperatures, hourly Bitcoin prices, ...)
+     the lookup normally shows the 500 newest markets. Tick **"Load the
+     complete series"** to list every market the series has ever had —
+     listing and downloading a large series can take a long time.
 2. **Pick a timeframe.** Two date pickers; the default covers the market's
    entire life. All times are UTC.
 3. **Fetch & download.** Click the fetch button, watch the progress, preview

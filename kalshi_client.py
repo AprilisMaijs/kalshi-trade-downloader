@@ -110,6 +110,27 @@ class KalshiClient:
                                      "markets", max_items=max_items)
         return markets
 
+    def get_series_markets(self, series_ticker, complete=False, max_items=500):
+        """All markets in a series, newest first from the live API.
+
+        With complete=True, pagination is unbounded and markets settled
+        before the cutoff are pulled from the historical archive as well
+        (which accepts series_ticker but rejects mve_filter).
+        """
+        params = {"series_ticker": series_ticker, "mve_filter": "exclude"}
+        markets = self._paginate("/markets", params, "markets",
+                                 max_items=None if complete else max_items)
+        if complete:
+            by_ticker = {m["ticker"]: m for m in markets}
+            archived = self._paginate("/historical/markets",
+                                      {"series_ticker": series_ticker},
+                                      "markets", max_items=None)
+            for market in archived:
+                by_ticker.setdefault(market["ticker"], market)
+            markets = sorted(by_ticker.values(),
+                             key=lambda m: m.get("open_time") or "")
+        return markets
+
     def get_events(self, status=None, max_items=1000):
         params = {"limit": 200}  # /events caps limit at 200
         if status:
